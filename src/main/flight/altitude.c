@@ -233,21 +233,25 @@ void calculateEstimatedAltitude(timeUs_t currentTimeUs)
     }
 #endif
 
+bool rangefinderAltitudeFound = false;
 #ifdef USE_RANGEFINDER
     if (sensors(SENSOR_RANGEFINDER) && rangefinderProcess(getCosTiltAngle())) {
         int32_t rangefinderAlt = rangefinderGetLatestAltitude();
         if (rangefinderAlt > 0 && rangefinderAlt >= rangefinderCfAltCm && rangefinderAlt <= rangefinderMaxAltWithTiltCm) {
             // RANGEFINDER in range, so use complementary filter
-            float rangefinderTransition = (float)(rangefinderMaxAltWithTiltCm - rangefinderAlt) / (rangefinderMaxAltWithTiltCm - rangefinderCfAltCm);
-            rangefinderAlt = (float)rangefinderAlt * rangefinderTransition + baroAlt * (1.0f - rangefinderTransition);
+            if (sensors(SENSOR_BARO)) {
+               float rangefinderTransition = (float)(rangefinderMaxAltWithTiltCm - rangefinderAlt) / (rangefinderMaxAltWithTiltCm - rangefinderCfAltCm);
+                rangefinderAlt = (float)rangefinderAlt * rangefinderTransition + baroAlt * (1.0f - rangefinderTransition);
+            }
             estimatedAltitude = rangefinderAlt;
+            rangefinderAltitudeFound = true;
         }
     }
 #endif
 
     float accZ_tmp = 0;
-#ifdef USE_ACC
-    if (sensors(SENSOR_ACC)) {
+#ifdef USE_ACC 
+    if (!rangefinderAltitudeFound && sensors(SENSOR_ACC)) {
         const float dt = accTimeSum * 1e-6f; // delta acc reading time in seconds
 
         // Integrator - velocity, cm/sec
