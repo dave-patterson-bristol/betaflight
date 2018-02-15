@@ -57,7 +57,8 @@ static int32_t estimatedAltitude = 0;                // in cm
 enum {
     DEBUG_ALTITUDE_ACC,
     DEBUG_ALTITUDE_VEL,
-    DEBUG_ALTITUDE_HEIGHT
+    DEBUG_ALTITUDE_EST_HEIGHT,
+    DEBUG_ALTITUDE_RF_HEIGHT
 };
 // 40hz update rate (20hz LPF on acc)
 #define BARO_UPDATE_FREQUENCY_40HZ (1000 * 25)
@@ -237,6 +238,7 @@ bool rangefinderAltitudeFound = false;
 #ifdef USE_RANGEFINDER
     if (sensors(SENSOR_RANGEFINDER) && rangefinderProcess(getCosTiltAngle())) {
         int32_t rangefinderAlt = rangefinderGetLatestAltitude();
+        DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_RF_HEIGHT, rangefinderAlt);
         if (rangefinderAlt > 0 && rangefinderAlt >= rangefinderCfAltCm && rangefinderAlt <= rangefinderMaxAltWithTiltCm) {
             // RANGEFINDER in range, so use complementary filter
             if (sensors(SENSOR_BARO)) {
@@ -270,7 +272,8 @@ bool rangefinderAltitudeFound = false;
 
     DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_ACC, accSum[2] / accSumCount);
     DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_VEL, vel);
-    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_HEIGHT, accAlt);
+    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_EST_HEIGHT, estimatedAltitude);
+
 
     imuResetAccelerationSum();
 
