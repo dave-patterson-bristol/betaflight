@@ -55,7 +55,7 @@ static int32_t estimatedAltitude = 0;                // in cm
 
 
 enum {
-    DEBUG_ALTITUDE_ACC,
+    DEBUG_ALTITUDE_HOLD_HEIGHT,
     DEBUG_ALTITUDE_VEL,
     DEBUG_ALTITUDE_EST_HEIGHT,
     DEBUG_ALTITUDE_RF_HEIGHT
@@ -72,7 +72,7 @@ PG_RESET_TEMPLATE(airplaneConfig_t, airplaneConfig,
 );
 
 static int32_t setVelocity = 0;
-static uint8_t velocityControl = 0;
+static uint8_t throttleOutOfDeadband = 0;
 static int32_t errorVelocityI = 0;
 static int32_t altHoldThrottleAdjustment = 0;
 static int16_t initialThrottleHold;
@@ -84,13 +84,16 @@ static void applyMultirotorAltHold(void)
 {
     static uint8_t isAltHoldChanged = 0;
     // multirotor alt hold
-    if (rcControlsConfig()->alt_hold_fast_change) {
+    //if (rcControlsConfig()->alt_hold_fast_change) {
+    if (false) {
         // rapid alt changes
         if (ABS(rcData[THROTTLE] - initialThrottleHold) > rcControlsConfig()->alt_hold_deadband) {
+            throttleOutOfDeadband = 1;
             errorVelocityI = 0;
             isAltHoldChanged = 1;
             rcCommand[THROTTLE] += (rcData[THROTTLE] > initialThrottleHold) ? -rcControlsConfig()->alt_hold_deadband : rcControlsConfig()->alt_hold_deadband;
         } else {
+            throttleOutOfDeadband = 0;
             if (isAltHoldChanged) {
                 AltHold = estimatedAltitude;
                 isAltHoldChanged = 0;
@@ -101,12 +104,13 @@ static void applyMultirotorAltHold(void)
         // slow alt changes, mostly used for aerial photography
         if (ABS(rcData[THROTTLE] - initialThrottleHold) > rcControlsConfig()->alt_hold_deadband) {
             // set velocity proportional to stick movement +100 throttle gives ~ +50 cm/s
+            throttleOutOfDeadband = 1;
             setVelocity = (rcData[THROTTLE] - initialThrottleHold) / 2;
-            velocityControl = 1;
             isAltHoldChanged = 1;
         } else if (isAltHoldChanged) {
+            setVelocity = 0;
             AltHold = estimatedAltitude;
-            velocityControl = 0;
+            throttleOutOfDeadband = 0;
             isAltHoldChanged = 0;
         }
         rcCommand[THROTTLE] = constrain(initialThrottleHold + altHoldThrottleAdjustment, PWM_RANGE_MIN, PWM_RANGE_MAX);
@@ -158,7 +162,7 @@ void updateRangefinderAltHoldState(void)
 
     if (!FLIGHT_MODE(RANGEFINDER_MODE)) {
         ENABLE_FLIGHT_MODE(RANGEFINDER_MODE);
-        AltHold = estimatedAltitude;
+        AltHold =  rangefinderGetLatestAltitude();
         initialThrottleHold = rcData[THROTTLE];
         errorVelocityI = 0;
         altHoldThrottleAdjustment = 0;
@@ -182,9 +186,9 @@ int32_t calculateAltHoldThrottleAdjustment(int32_t vel_tmp, float accZ_tmp, floa
 
     // Altitude P-Controller
 
-    if (!velocityControl) {
+    if (!throttleOutOfDeadband) {
         error = constrain(AltHold - estimatedAltitude, -500, 500);
-        error = applyDeadband(error, 10); // remove small P parameter to reduce noise near zero position
+        error = applyDeadband(error, 3); // remove small P parameter to reduce noise near zero position
         setVel = constrain((currentPidProfile->pid[PID_ALT].P * error / 128), -300, +300); // limit velocity to +/- 3 m/s
     } else {
         setVel = setVelocity;
@@ -192,7 +196,7 @@ int32_t calculateAltHoldThrottleAdjustment(int32_t vel_tmp, float accZ_tmp, floa
     // Velocity PID-Controller
 
     // P
-    error = setVel - vel_tmp;
+    error = setVel - (vel_tmp/2);
     result = constrain((currentPidProfile->pid[PID_VEL].P * error / 32), -300, +300);
 
     // I
@@ -210,6 +214,7 @@ int32_t calculateAltHoldThrottleAdjustment(int32_t vel_tmp, float accZ_tmp, floa
 #if defined(USE_BARO) || defined(USE_RANGEFINDER)
 void calculateEstimatedAltitude(timeUs_t currentTimeUs)
 {
+    
     static timeUs_t previousTimeUs = 0;
     const uint32_t dTime = currentTimeUs - previousTimeUs;
     if (dTime < BARO_UPDATE_FREQUENCY_40HZ) {
@@ -221,6 +226,7 @@ void calculateEstimatedAltitude(timeUs_t currentTimeUs)
     static float accAlt = 0.0f;
 
     int32_t baroAlt = 0;
+    int32_t error = 0;
 #ifdef USE_BARO
     if (sensors(SENSOR_BARO)) {
         if (!isBaroCalibrationComplete()) {
@@ -239,13 +245,16 @@ bool rangefinderAltitudeFound = false;
     if (sensors(SENSOR_RANGEFINDER) && rangefinderProcess(getCosTiltAngle())) {
         int32_t rangefinderAlt = rangefinderGetLatestAltitude();
         DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_RF_HEIGHT, rangefinderAlt);
-        if (rangefinderAlt > 0 && rangefinderAlt >= rangefinderCfAltCm && rangefinderAlt <= rangefinderMaxAltWithTiltCm) {
+        if (rangefinderAlt > 0 && rangefinderAlt <= rangefinderMaxAltWithTiltCm) {
             // RANGEFINDER in range, so use complementary filter
-            if (sensors(SENSOR_BARO)) {
+            if (sensors(SENSOR_BARO) && rangefinderAlt >= rangefinderCfAltCm ) {
                float rangefinderTransition = (float)(rangefinderMaxAltWithTiltCm - rangefinderAlt) / (rangefinderMaxAltWithTiltCm - rangefinderCfAltCm);
                 rangefinderAlt = (float)rangefinderAlt * rangefinderTransition + baroAlt * (1.0f - rangefinderTransition);
             }
             estimatedAltitude = rangefinderAlt;
+            error = constrain(AltHold - estimatedAltitude, -500, 500);
+            error = applyDeadband(error, 3); // remove small P parameter to reduce noise near zero position
+            vel = constrain( (currentPidProfile->pid[PID_ALT].P * error / 128), -300, +300); // limit velocity to +/- 3 m/s
             rangefinderAltitudeFound = true;
         }
     }
@@ -253,9 +262,9 @@ bool rangefinderAltitudeFound = false;
 
     float accZ_tmp = 0;
 #ifdef USE_ACC 
-    if (!rangefinderAltitudeFound && sensors(SENSOR_ACC)) {
+    if (sensors(SENSOR_ACC) && !rangefinderAltitudeFound) {
         const float dt = accTimeSum * 1e-6f; // delta acc reading time in seconds
-
+        
         // Integrator - velocity, cm/sec
         if (accSumCount) {
             accZ_tmp = (float)accSum[2] / accSumCount;
@@ -266,11 +275,11 @@ bool rangefinderAltitudeFound = false;
         accAlt += (vel_acc * 0.5f) * dt + vel * dt;  // integrate velocity to get distance (x= a/2 * t^2)
         accAlt = accAlt * CONVERT_PARAMETER_TO_FLOAT(barometerConfig()->baro_cf_alt) + (float)baro.BaroAlt * (1.0f - CONVERT_PARAMETER_TO_FLOAT(barometerConfig()->baro_cf_alt));    // complementary filter for altitude estimation (baro & acc)
         vel += vel_acc;
-        estimatedAltitude = accAlt;
+        // estimatedAltitude = accAlt;
     }
 #endif
 
-    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_ACC, accSum[2] / accSumCount);
+    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_HOLD_HEIGHT, AltHold);
     DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_VEL, vel);
     DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_EST_HEIGHT, estimatedAltitude);
 
@@ -290,12 +299,12 @@ bool rangefinderAltitudeFound = false;
 
         baroVel = constrain(baroVel, -1500, 1500);  // constrain baro velocity +/- 1500cm/s
         baroVel = applyDeadband(baroVel, 10);       // to reduce noise near zero
+
+        // apply Complimentary Filter to keep the calculated velocity based on baro velocity (i.e. near real velocity).
+        // By using CF it's possible to correct the drift of integrated accZ (velocity) without loosing the phase, i.e without delay
+        vel = vel * CONVERT_PARAMETER_TO_FLOAT(barometerConfig()->baro_cf_vel) + baroVel * (1.0f - CONVERT_PARAMETER_TO_FLOAT(barometerConfig()->baro_cf_vel));
     }
 #endif // USE_BARO
-
-    // apply Complimentary Filter to keep the calculated velocity based on baro velocity (i.e. near real velocity).
-    // By using CF it's possible to correct the drift of integrated accZ (velocity) without loosing the phase, i.e without delay
-    vel = vel * CONVERT_PARAMETER_TO_FLOAT(barometerConfig()->baro_cf_vel) + baroVel * (1.0f - CONVERT_PARAMETER_TO_FLOAT(barometerConfig()->baro_cf_vel));
     int32_t vel_tmp = lrintf(vel);
 
     // set vario
