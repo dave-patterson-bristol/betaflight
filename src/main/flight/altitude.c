@@ -196,7 +196,7 @@ int32_t calculateAltHoldThrottleAdjustment(int32_t vel_tmp, float accZ_tmp, floa
     // Velocity PID-Controller
 
     // P
-    error = setVel - (vel_tmp/2);
+    error = setVel - vel_tmp;
     result = constrain((currentPidProfile->pid[PID_VEL].P * error / 32), -300, +300);
 
     // I
@@ -226,7 +226,7 @@ void calculateEstimatedAltitude(timeUs_t currentTimeUs)
     static float accAlt = 0.0f;
 
     int32_t baroAlt = 0;
-    int32_t error = 0;
+    
 #ifdef USE_BARO
     if (sensors(SENSOR_BARO)) {
         if (!isBaroCalibrationComplete()) {
@@ -243,6 +243,10 @@ void calculateEstimatedAltitude(timeUs_t currentTimeUs)
 bool rangefinderAltitudeFound = false;
 #ifdef USE_RANGEFINDER
     if (sensors(SENSOR_RANGEFINDER) && rangefinderProcess(getCosTiltAngle())) {
+        
+        static timeUs_t previousRFTimeUs = 0;
+        const uint32_t rangefinderElapsedTime = currentTimeUs - previousRFTimeUs;
+        
         int32_t rangefinderAlt = rangefinderGetLatestAltitude();
         DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_RF_HEIGHT, rangefinderAlt);
         if (rangefinderAlt > 0 && rangefinderAlt <= rangefinderMaxAltWithTiltCm) {
@@ -252,17 +256,21 @@ bool rangefinderAltitudeFound = false;
                 rangefinderAlt = (float)rangefinderAlt * rangefinderTransition + baroAlt * (1.0f - rangefinderTransition);
             }
             estimatedAltitude = rangefinderAlt;
-            error = constrain(AltHold - estimatedAltitude, -500, 500);
-            error = applyDeadband(error, 3); // remove small P parameter to reduce noise near zero position
-            vel = constrain( (currentPidProfile->pid[PID_ALT].P * error / 128), -300, +300); // limit velocity to +/- 3 m/s
             rangefinderAltitudeFound = true;
+
+            static int32_t previousRangefinderAlt = 0;
+            if (previousRangefinderAlt > 0 && previousRFTimeUs > 0) {
+                vel = (rangefinderAlt - previousRangefinderAlt) * 1000000.0f / rangefinderElapsedTime;
+            }
+            previousRangefinderAlt = rangefinderAlt;
+            previousRFTimeUs = currentTimeUs;
         }
     }
 #endif
 
     float accZ_tmp = 0;
 #ifdef USE_ACC 
-    if (sensors(SENSOR_ACC) && !rangefinderAltitudeFound) {
+    if (sensors(SENSOR_ACC)) {
         const float dt = accTimeSum * 1e-6f; // delta acc reading time in seconds
         
         // Integrator - velocity, cm/sec
@@ -271,18 +279,17 @@ bool rangefinderAltitudeFound = false;
         }
         const float vel_acc = accZ_tmp * accVelScale * (float)accTimeSum;
 
+
+        if (!rangefinderAltitudeFound && sensors(SENSOR_BARO)) {
         // Integrator - Altitude in cm
-        accAlt += (vel_acc * 0.5f) * dt + vel * dt;  // integrate velocity to get distance (x= a/2 * t^2)
-        accAlt = accAlt * CONVERT_PARAMETER_TO_FLOAT(barometerConfig()->baro_cf_alt) + (float)baro.BaroAlt * (1.0f - CONVERT_PARAMETER_TO_FLOAT(barometerConfig()->baro_cf_alt));    // complementary filter for altitude estimation (baro & acc)
-        vel += vel_acc;
-        // estimatedAltitude = accAlt;
+            accAlt += (vel_acc * 0.5f) * dt + vel * dt;  // integrate velocity to get distance (x= a/2 * t^2)
+            accAlt = accAlt * CONVERT_PARAMETER_TO_FLOAT(barometerConfig()->baro_cf_alt) + (float)baro.BaroAlt * (1.0f - CONVERT_PARAMETER_TO_FLOAT(barometerConfig()->baro_cf_alt));    // complementary filter for altitude estimation (baro & acc)
+            vel = vel_acc;
+            estimatedAltitude = accAlt;
+        }
+         
     }
 #endif
-
-    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_HOLD_HEIGHT, AltHold);
-    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_VEL, vel);
-    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_EST_HEIGHT, estimatedAltitude);
-
 
     imuResetAccelerationSum();
 
@@ -309,6 +316,11 @@ bool rangefinderAltitudeFound = false;
 
     // set vario
     estimatedVario = applyDeadband(vel_tmp, 5);
+
+    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_HOLD_HEIGHT, AltHold);
+    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_VEL, vel);
+    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_EST_HEIGHT, estimatedAltitude);
+
 
 #ifdef USE_ALT_HOLD
     static float accZ_old = 0.0f;
