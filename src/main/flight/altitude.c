@@ -55,10 +55,10 @@ static int32_t estimatedAltitude = 0;                // in cm
 
 
 enum {
-    DEBUG_ALTITUDE_HOLD_HEIGHT,
-    DEBUG_ALTITUDE_VEL,
-    DEBUG_ALTITUDE_EST_HEIGHT,
-    DEBUG_ALTITUDE_RF_HEIGHT
+    DEBUG_ALTITUDE_RF_HEIGHT,
+    DEBUG_ALTITUDE_P,
+    DEBUG_ALTITUDE_I,
+    DEBUG_ALTITUDE_D
 };
 // 40hz update rate (20hz LPF on acc)
 #define BARO_UPDATE_FREQUENCY_40HZ (1000 * 25)
@@ -198,14 +198,19 @@ int32_t calculateAltHoldThrottleAdjustment(int32_t vel_tmp, float accZ_tmp, floa
     // P
     error = setVel - vel_tmp;
     result = constrain((currentPidProfile->pid[PID_VEL].P * error / 32), -300, +300);
+    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_P, result);
 
     // I
     errorVelocityI += (currentPidProfile->pid[PID_VEL].I * error);
     errorVelocityI = constrain(errorVelocityI, -(8192 * 200), (8192 * 200));
     result += errorVelocityI / 8192;     // I in range +/-200
+    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_I, errorVelocityI/8192);
+
 
     // D
-    result -= constrain(currentPidProfile->pid[PID_VEL].D * (accZ_tmp + accZ_old) / 512, -150, 150);
+    int32_t dterm = constrain(currentPidProfile->pid[PID_VEL].D * (accZ_tmp + accZ_old) / 512, -150, 150);
+    result -= dterm;
+    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_D, dterm);
 
     return result;
 }
@@ -257,13 +262,14 @@ bool rangefinderAltitudeFound = false;
             }
             estimatedAltitude = rangefinderAlt;
             rangefinderAltitudeFound = true;
-
-            static int32_t previousRangefinderAlt = 0;
-            if (previousRangefinderAlt > 0 && previousRFTimeUs > 0) {
-                vel = (rangefinderAlt - previousRangefinderAlt) * 1000000.0f / rangefinderElapsedTime;
+            if (rangefinderElapsedTime > 500000) {
+                static int32_t previousRangefinderAlt = 0;
+                if (previousRangefinderAlt > 0 && previousRFTimeUs > 0) {
+                    vel = (rangefinderAlt - previousRangefinderAlt) * 1000000.0f / rangefinderElapsedTime;
+                }
+                previousRangefinderAlt = rangefinderAlt;
+                previousRFTimeUs = currentTimeUs;
             }
-            previousRangefinderAlt = rangefinderAlt;
-            previousRFTimeUs = currentTimeUs;
         }
     }
 #endif
@@ -317,9 +323,9 @@ bool rangefinderAltitudeFound = false;
     // set vario
     estimatedVario = applyDeadband(vel_tmp, 5);
 
-    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_HOLD_HEIGHT, AltHold);
-    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_VEL, vel);
-    DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_EST_HEIGHT, estimatedAltitude);
+    //DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_HOLD_HEIGHT, AltHold);
+    //DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_VEL, vel);
+    //DEBUG_SET(DEBUG_ALTITUDE, DEBUG_ALTITUDE_EST_HEIGHT, estimatedAltitude);
 
 
 #ifdef USE_ALT_HOLD
